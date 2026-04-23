@@ -1,0 +1,52 @@
+ 
+Project Aegis: Building an Advanced Enterprise RAG System
+Objective: Build a highly accurate, context-aware Retrieval-Augmented Generation (RAG) chatbot capable of navigating complex, interconnected, and highly numerical corporate policy documents.
+ 
+Part 1: The Ingestion Engine (Data to Vector Store)
+Naive RAG breaks documents down by arbitrary character counts (e.g., splitting every 1,000 characters). This destroys tables, cuts sentences in half, and loses the context of which section the text belongs to. For Project Aegis, we are building a context-aware ingestion pipeline.
+Step 1: Document Parsing & Advanced Chunking
+Instead of blindly cutting text, you will implement Markdown-Aware Semantic Chunking.
+1.	Header Splitting: Parse the document by Markdown headers (#, ##, ###). This ensures that a chunk about "International Per Diems" stays entirely within its own chunk and doesn't bleed into "Ground Transportation."
+2.	Table Preservation: Tables are the Achilles' heel of basic RAG. Ensure your chunking logic identifies Markdown tables and keeps them intact as a single block of text. If a table is too large, chunk it by row, but append the column headers to every row chunk so the LLM understands the numbers.
+3.	Overlap: Implement a 10-15% token overlap between sequential chunks to ensure sentences bridging two paragraphs are not lost.
+Step 2: Metadata Extraction & Tagging
+Vectors alone are not enough; you need structured data to filter your searches. Before embedding, run a lightweight LLM (or regex script) over the raw documents to extract key attributes.
+Every chunk must be packaged with a metadata payload. For example:
+JSON
+{
+  "chunk_text": "Employees must hold a passport valid for at least six (6) months...",
+  "metadata": {
+    "document_id": "TRV-POL-2005-V3",
+    "policy_category": "Travel",
+    "policy_owner": "GCT-RM",
+    "effective_date": "2026-02-01",
+    "h1_header": "Corporate Travel Policy: International",
+    "h2_header": "Passports, Visas, and Immigration"
+  }
+}
+Step 3: Dense Embedding and Upsertion
+•	The Model: Use a high-quality dense embedding model (e.g., OpenAI text-embedding-3-large, Voyage AI, or an open-source BGE-large model). Sparse embeddings (BM25) are excluded from this phase to focus purely on semantic mapping.
+•	The Vector Database: Choose a vector database that supports rigorous metadata filtering (Pinecone, Qdrant, Weaviate, or Milvus).
+•	The Upsert: Batch your embeddings and push them to the database along with their metadata payloads.
+ 
+Part 2: The Advanced Retrieval Pipeline
+The biggest bottleneck in RAG is not the LLM's generation; it is the retrieval of irrelevant context. Users are notoriously lazy prompt writers. If a user asks, "What's the allowance?", a basic semantic search will fail because "allowance" applies to PTO, Travel, and Sabbaticals.
+Step 1: Query Transformation (Expansion & HyDE)
+Before touching the database, we must fix the user's query.
+•	Multi-Query Expansion: Pass the user's raw query to an LLM and ask it to generate 3-4 different ways to ask the same question.
+o	User Input: "Can I expense a taxi?"
+o	Expansions: "Policy on rideshares and Uber", "Ground transportation reimbursement", "Cab fare corporate travel".
+o	Action: Embed all variations, retrieve the top K chunks for each, and pool the unique results.
+•	HyDE (Hypothetical Document Embeddings): Ask the LLM to write a fake, hypothetical answer to the user's query without any context. Embed this fake answer and search the database with it. Because the fake answer looks structurally similar to the target document (using policy-like language), it often retrieves better matches than the raw question.
+Step 2: Metadata Filtering (Pre vs. Post)
+Leverage the metadata extracted in Part 1 to narrow the search space and eliminate hallucinations.
+•	Pre-Filtering: Apply hard rules before the vector search. If the user asks, "What is the HR policy on maternity leave?", use an LLM router to identify the intent as "HR". Apply a pre-filter to your vector search: WHERE policy_category == 'HR'. This mathematically prevents the system from accidentally returning the Travel Policy.
+•	Post-Filtering: Retrieve a large number of chunks (e.g., Top K = 20), then filter them out based on dates. If multiple versions of the Travel Policy are retrieved, write logic to drop the older versions and keep only the chunk where effective_date is the most recent.
+Step 3: Reranking (The Cross-Encoder)
+Vector databases use bi-encoders (fast, but mathematically shallow) to retrieve the top K chunks. To achieve maximum accuracy, we implement a Reranker.
+1.	Broad Retrieval: Use your dense embeddings to retrieve the Top 25 chunks from the vector database.
+2.	Cross-Encoder Scoring: Pass the user's query AND each of the 25 chunks into a Cross-Encoder model (e.g., Cohere ReRank or bge-reranker).
+3.	The Shift: The Cross-Encoder reads the query and the chunk simultaneously, scoring their exact logical relevance from 0 to 1.
+4.	Pruning: Take the Top 5 chunks from the reranker's output and pass only those to your final LLM to generate the answer. This solves the "Lost in the Middle" problem, where LLMs ignore data buried in massive context windows.
+ 
+
